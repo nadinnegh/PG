@@ -1,0 +1,1770 @@
+library(e1071)
+library(randomForest)
+library(corrplot)
+library(Hmisc)
+library(glmnet)
+library(dummies)
+library(Metrics)
+library(purrr)
+library(magrittr)
+library(xml2)
+library(httr)
+library(curl)
+library(rvest)
+library(datasets)
+library(dplyr)
+library(XML)
+library(methods)
+library(odbc)
+library(stringr)
+library(data.table)
+library(reshape2)
+library(ggplot2)
+library(reshape2)
+library(tidyverse)
+library(caret) 
+library(lmtest)
+
+# Carregando arquivo XML na tabela de Atletas no banco de dados e definindo o nó raiz.
+
+xml = xmlParse(file = "C:\\Users\\Nadinne\\Documents\\PG\\BDados\\OPTA\\F40.xml")
+root = xmlRoot(xml)
+
+# Criando listas para cada variável
+
+pl = root[[1]][[1]]
+
+id = xpathApply(pl, "//Player/@uID")
+fname = xpathApply(pl, "//Player/Stat[@Type='first_name']", xmlValue)
+lname = xpathApply(pl, "//Player/Stat[@Type='last_name']", xmlValue)
+birth = xpathApply(pl, "//Player/Stat[@Type='birth_date']", xmlValue)
+bmass = xpathApply(pl, "//Player/Stat[@Type='weight']", xmlValue)
+est = xpathApply(pl, "//Player/Stat[@Type='height']", xmlValue)
+pos = xpathApply(pl, "//Player/Stat[@Type='real_position']", xmlValue)
+nac = xpathApply(pl, "//Player/Stat[@Type='country']", xmlValue)
+
+players = data.frame(unlist(id), unlist(fname), unlist(lname), unlist(birth), unlist(bmass), unlist(est), unlist(pos), unlist(nac))
+
+# Acertando os nomes das colunas.
+
+colnames(players) = c("id", "fname", "lname", "birth", "bmass", "height","pos","nac" )
+row.names(players) = c(1:nrow(players))
+
+#Conexão com o BD
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+# Primero precisamos ajustar a tabela que criamos. Já que o id será usado como chave primária da tabela, nao pode apresentar letras, logo removemos o "p".
+
+players$id = sub("p", "", players[,1])
+
+# Agora criamos uma tabela que será usada para gerar o código da query.
+
+playerssql=players
+
+# Removemos os valores duplicados.
+
+playerssql = players[!duplicated(players$id),]
+
+# Acrescentamos o "'" em todos os valores.
+
+playerssql$id = paste0("'", playerssql$id, "'")
+playerssql$fname = paste0("'", playerssql$fname, "'")
+playerssql$lname = paste0("'", playerssql$lname, "'")
+playerssql$birth = paste0("'", playerssql$birth, "'")
+playerssql$bmass = paste0("'", playerssql$bmass, "'")
+playerssql$height = paste0("'", playerssql$height, "'")
+playerssql$pos = paste0("'", playerssql$pos, "'")
+playerssql$nac = paste0("'", playerssql$nac, "'")
+
+# Substituímos valores "Unknown" por "NULL".
+
+playerssql[playerssql=="'Unknown'"]="NULL"
+
+# Agora que a tabela está pronta, geramos a string para query.
+
+p = paste0("(",apply(playerssql, 1, paste, collapse=","),")")
+
+query = paste0("INSERT INTO Atletas", " VALUES ", paste0(p, collapse=","))
+
+# Em seguida executamos a query.
+
+q = dbSendQuery(con,query)
+dbClearResult(q)
+
+
+# Carregando arquivo XML na tabela de Equipes do banco de dados e definindo o nó raiz.
+xml = xmlParse(file = "C:\\Users\\Nadinne\\Documents\\PG\\BDados\\OPTA\\F40.xml")
+root = xmlRoot(xml)
+
+# Criando listas para cada variável
+
+pa = root[[1]][[1]]
+
+# ID Equipes
+id = xpathApply(pa, "//Team",xmlGetAttr, "uID")
+
+#Nome Equipes
+
+TeamName = xpathApply(pa, "//Team/Name", xmlValue)
+
+equipes = data.frame(unlist(id), unlist(TeamName))
+
+# Acertando os nomes das colunas.
+
+colnames(equipes) = c("TeamID", "TeamName")
+row.names(equipes) = c(1:nrow(equipes))
+
+#Conexao com o BD
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+# Primero precisamos ajustar a tabela que criamos. Já que o id será usado como chave primária da tabela, nao pode apresentar letras, 
+# logo removemos os "t" nas equipes para facilitar a conexao com as outras tabelas
+
+equipes$TeamID = sub("t", "", equipes[,1])
+
+# Agora criamos uma tabela que será usada para gerar o código da query.
+
+equipessql = equipes
+
+# Removemos os valores duplicados.
+
+equipessql = equipes[!duplicated(equipes$TeamID),]
+
+# Acrescentamos o "'" em todos os valores.
+
+equipessql$TeamID = paste0("'", equipessql$TeamID, "'")
+equipessql$TeamName = paste0("'", equipessql$TeamName, "'")
+
+# Agora que a tabela está pronta, geramos a string para query.
+
+p = paste0("(",apply(equipessql, 1, paste, collapse=","),")")
+
+query = paste0("INSERT INTO Equipes", " VALUES ", paste0(p, collapse=","))
+
+# Em seguida executamos a query.
+
+q = dbSendQuery(con,query)
+dbClearResult(q)
+
+# Carregando arquivo XML na tabela de Partidas no banco de dados e definindo o nó raiz.
+
+xml = xmlParse(file = "C:\\Users\\Nadinne\\Documents\\PG\\BDados\\OPTA\\F1.xml")
+root = xmlRoot(xml)
+
+# Criando listas para cada variável
+
+pa = root[[1]][[1]]
+
+# ID Partidas
+id = xpathApply(pa, "//MatchData",xmlGetAttr, "uID")
+
+# Fora Gols e Fora ID
+ForaEquipe = as.data.frame(xpathApply(pa, "//MatchData/TeamData[@Side='Away']",xmlAttrs))
+names(ForaEquipe) = c(1:ncol(ForaEquipe))
+ForaGols = ForaEquipe[2,]
+ForaID = ForaEquipe[4,]
+
+# Comp ID
+CompDados = as.data.frame(xpathApply(pa, "//SoccerDocument",xmlAttrs))
+CompID = CompDados[3,] 
+
+# Data
+DataPartida = as.data.frame(xpathApply(pa, "//MatchData/MatchInfo/Date",xmlValue))
+names(DataPartida)=1:ncol(DataPartida)
+
+# Casa Gols e Casa ID
+CasaEquipe = as.data.frame(xpathApply(pa, "//MatchData/TeamData[@Side='Home']",xmlAttrs))
+names(CasaEquipe) = c(1:ncol(CasaEquipe))
+CasaGols = CasaEquipe[2,]
+CasaID = CasaEquipe[4,]
+
+# Rodada
+
+Rodada = xpathApply(pa, "//MatchData/MatchInfo[@MatchDay]",xmlGetAttr, "MatchDay")
+
+# Temporada ID
+TempID = xpathApply(pa, "//SoccerDocument[@season_id]",xmlGetAttr, "season_id")
+
+# Estadio 
+Estadio = xpathApply(pa, "//MatchData/Stat[@Type='Venue']", xmlValue)
+
+# Cidade
+Cidade = xpathApply(pa, "//MatchData/Stat[@Type='City']", xmlValue)
+
+partidas = data.frame(unlist(id), unlist(ForaGols), unlist(ForaID), unlist(CompID), unlist(DataPartida), unlist(CasaGols), unlist(CasaID), unlist(Rodada), unlist(TempID), unlist(Estadio), unlist(Cidade))
+
+# Acertando os nomes das colunas.
+
+colnames(partidas) = c("matchID", "awayscore", "awayID", "compID", "date", "homescore", "homeID", "rodada", "seasonID", "venue", "city")
+row.names(partidas) = c(1:nrow(partidas))
+
+#Conexao com o BD
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+# Primero precisamos ajustar a tabela que criamos. Já que o id será usado como chave primária da tabela, nao pode apresentar letras, 
+# logo removemos o "g" e os "t" nas equipes para facilitar a conexao com as outras tabelas
+
+partidas$matchID = sub("g", "", partidas[,1])
+
+partidas$homeID = sub("t", "", partidas[,7])
+
+partidas$awayID = sub("t", "", partidas[,3])
+
+#concertando a data
+
+partidas$date = str_sub(partidas$date, end=10)
+
+# Agora criamos uma tabela que será usada para gerar o código da query.
+
+partidassql = partidas
+
+# Removemos os valores duplicados.
+
+partidassql = partidas[!duplicated(partidas$matchID),]
+
+# Acrescentamos o "'" em todos os valores.
+
+partidassql$matchID = paste0("'", partidassql$matchID, "'")
+partidassql$awayscore = paste0("'", partidassql$awayscore, "'")
+partidassql$awayID = paste0("'", partidassql$awayID, "'")
+partidassql$compID = paste0("'", partidassql$compID, "'")
+partidassql$date = paste0("'", partidassql$date, "'")
+partidassql$homescore = paste0("'", partidassql$homescore, "'")
+partidassql$homeID = paste0("'", partidassql$homeID, "'")
+partidassql$rodada = paste0("'", partidassql$rodada, "'")
+partidassql$seasonID = paste0("'", partidassql$seasonID, "'")
+partidassql$venue = paste0("'", partidassql$venue, "'")
+partidassql$city = paste0("'", partidassql$city, "'")
+
+# Substituímos valores "Unknown" por "NULL".
+
+partidassql[partidassql=="'Unknown'"]="NULL"
+
+# Agora que a tabela está pronta, geramos a string para query.
+
+p = paste0("(",apply(partidassql, 1, paste, collapse=","),")")
+
+query = paste0("INSERT INTO Partidas", " VALUES ", paste0(p, collapse=","))
+
+# Em seguida executamos a query.
+
+q = dbSendQuery(con,query)
+dbClearResult(q)
+
+# Carregando arquivo XML nas tabelas de Eventos e de Qualificadores no banco de dados e definindo o nó raiz.
+
+teste = read.csv(file.choose(), header = T, sep = ";")
+
+#Pegando apenas as colunas da tabela de eventos que desejamos trabalhar
+
+eventos = subset.data.frame(teste, select=c('id','id2','event_id','type_id','min','sec','team_id','outcome','x','y','timestamp3','player_id'))
+
+qualificadores = subset.data.frame(teste, select=c('id2','id4','qualifier_id','type_id','value'))
+
+
+# Acertando os nomes das colunas.
+
+colnames(eventos) = c("IDPartidaEvento", "IDUnicoEv", "IDEvento", "Tipo", "Min", "Sec", "TeamID", "Resultado", "X", "Y", "timestamp","IDAtleta")
+row.names(eventos) = c(1:nrow(eventos))
+
+colnames(qualificadores) = c("IDUnicoEv", "IDUnicoQualificador", "IDQualificador", "Tipo", "Value")
+row.names(qualificadores) = c(1:nrow(qualificadores))
+
+# Concertando a data na tabela que criamos
+
+eventos$timestamp = str_sub(eventos$timestamp, end=10)
+
+#trocando o separador dos numeros decimais - vars X e Y
+
+eventos$X = gsub("\\,",".",eventos$X)
+eventos$Y = gsub("\\,",".",eventos$Y)
+
+# Removendo as duplicatas na tabela eventos
+
+eventos = eventos[!duplicated(eventos$IDUnicoEv),]
+
+query = "SELECT * FROM Eventos"
+c = dbSendQuery(con,query)
+consultaeventos = dbFetch(c)
+dbClearResult(c)
+
+#colocando em uma lista os valores que tenho duplicado com o que ja foi inserido no BD e devem ser excluidos 
+
+for (i in 1:nrow(eventos))
+{
+  
+  eliminar = which(consultaeventos[i,2] %in% eventos$IDUnicoEv)
+  eventos = eventos[!eliminar,]
+}  
+
+
+#Conexao com o BD
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+
+# Agora criamos uma tabela que será usada para gerar o código da query. Aqui farei iteração para inserir a cada 500
+
+nant = 1
+n = 500
+
+repeat {
+  
+  if (n > nrow(eventos)) 
+  {
+    n =  nrow(eventos)
+  }
+  
+  eventossql = eventos[nant:n,]
+  
+  # Acrescentamos o "'" nos valores que nao sao numericos
+  
+  eventossql$timestamp = paste0("'", eventossql$timestamp, "'")
+  
+  # Substituímos valores "Unknown" por "NULL".
+  
+  eventossql[is.na(eventossql)]="NULL"
+  
+  # Agora que a tabela está pronta, geramos a string para query.
+  
+  e = paste0("(",apply(eventossql, 1, paste, collapse=","),")")
+  
+  query = paste0("INSERT INTO Eventos", " VALUES ", paste0(e, collapse=","))
+  
+  # Em seguida executamos a query.
+  
+  q = dbSendQuery(con,query)
+  dbClearResult(q)
+  
+  nant = n + 1
+  n = n + 500
+  
+  if (nant > nrow(eventos)) break()
+  
+} 
+
+#Agora inserindo os dados na tabela de qualificadores por evento
+
+mant = 1
+m = 500
+
+repeat {
+  
+  qualificadoressql = qualificadores[mant:m,0]
+  
+  # Acrescentamos o "'" nos valores que nao sao numericos
+  
+  qualificadoressql$Value = paste0("'", qualificadoressql$Value, "'")
+  
+  # Substituímos valores "Unknown" por "NULL".
+  
+  qualificadoressql[is.na(eventossql)]="NULL"
+  
+  # Agora que a tabela está pronta, geramos a string para query.
+  
+  f = paste0("(",apply(qualificadoressql, 1, paste, collapse=","),")")
+  
+  query = paste0("INSERT INTO Qualificadores por evento", " VALUES ", paste0(f, collapse=","))
+  
+  
+  # Em seguida executamos a query.
+  
+  q = dbSendQuery(con,query)
+  dbClearResult(q)
+  
+  mant = m
+  m = m + 500
+  
+  if (mant > nrow(qualificadores)) break()
+  
+} 
+
+######### WEBSCRAP DA TRANSFERMARKT
+
+page <- "https://www.transfermarkt.com/campeonato-brasileiro-serie-a/startseite/wettbewerb/BRA1/plus/?saison_id=2016"
+
+scraped_page <- read_html(page)
+
+Links <- scraped_page %>% html_nodes("#yw1 .vereinprofil_tooltip") %>% html_attr('href') %>% as.character()
+
+Linksdf = paste0("https://www.transfermarkt.com", Links)
+
+Linksdf = as.data.frame(Linksdf)
+
+Linksdf = Linksdf[!duplicated(Linksdf),]
+
+Linksdf <- setNames(Linksdf, c("URL"))
+
+# Pegando o link da tabela detalhada de cada equipe
+# Nesse link temos o valor de mercado de cada jogador no início do campeonato
+#limpando as variaveis antes de começar o loop
+j=0;
+i=0;
+Linkdet <- NULL; 
+
+for (i in Linksdf)
+{
+  j=j+1;
+  ws2 = read_html(i) 
+  temp1 = ws2 %>% html_nodes(".kartei-button-bar") %>% html_nodes("a") %>% html_attr("href")
+  temp2 = paste0("https://www.transfermarkt.com", temp1)
+  Linkdet = rbind(Linkdet,temp2)
+  cat(j)
+}
+
+# Vamos excluir as colunas B1 e B3, porque quero somente a tabela detalhada de B2
+
+colnames(Linkdet) <- c("B1", "B2", "B3")
+Linkdet <- Linkdet[,-c(1,3), drop = F]
+
+#Pegar o valor de mercado de cada jogador no início do campeonato
+
+VMercado = data.frame(clube = as.character(), player = as.character(), vmpre = as.character())
+
+j=0;
+odd_indexes = 0;
+
+for (i in Linkdet)
+{
+  j=j+1;
+  ws3 = read_html(i) 
+  clube = ws3 %>% html_nodes(".dataName span") %>% html_text() %>% as.character()
+  dnasc = ws3 %>% html_nodes(".posrela+ .zentriert") %>% html_text() %>% as.character()
+  player = ws3 %>% html_nodes(".items .spielprofil_tooltip") %>% html_text() %>% as.character()
+  norows <- length(player)
+  odd_indexes <- seq(1,norows,2)  
+  player <- data.frame(player[odd_indexes])
+  vmpre = ws3 %>% html_nodes(".items .rechts") %>% html_text() %>% as.character()
+  vmpre = vmpre[-1]
+  temp3 = data.frame(clube, player, vmpre, dnasc)
+  VMercado <- rbind(VMercado,temp3)  
+  cat(j)
+  
+}
+
+VMercado <- setNames(VMercado, c("clube", "player", "vmpre"))
+
+##Pegar informação dos jogadores que foram transferidos no campeonato 2017
+
+page4 <- "https://www.transfermarkt.com/campeonato-brasileiro-serie-a/transfers/wettbewerb/BRA1/plus/?saison_id=2017&s_w=&leihe=0&leihe=1&intern=0"
+
+ws4 <- read_html(page4)
+
+transfclubes <- ws4 %>% html_nodes(".table-header .vereinprofil_tooltip") %>% html_attr('href') %>% as.character()
+transfclubes = paste0("https://www.transfermarkt.com", transfclubes,"/pos//detailpos/0/w_s//plus/1#zugaenge")
+norows <- length(transfclubes)
+odd_indexes <- seq(1,norows,2)  
+transfclubes <- data.frame(transfclubes[odd_indexes])
+
+
+################ Pegar valor de mercado ao final da temporada
+
+vmercadofinal = VMercado
+vmercadofinal$link = ""
+
+for(r in c(1:nrow(VMercado))){
+  
+  match = which(as.character(vmercadofinal$player) == as.character(VMercado$player[r]))
+  if(length(vmercadofinal[match,])!=0)
+    for(dup in match){
+      if(vmercadofinal$clube[dup]==VMercado$clube[r])
+        vmercadofinal[dup,21]=as.character(VMercado[r,5])
+    }
+  
+  
+}
+
+vmercadofinal$link
+
+getjsdata = function(campo, js){
+  vl=NULL
+  pos=0
+  finallist=c()
+  while(pos!=-1){
+    pos = regexpr(campo, js)
+    js = substr(js, start=pos[1]+attr(pos,"match.length"), stop = nchar(js))
+    vl = substr(js, start=0, stop=regexpr(",",js))
+    vl = gsub("\\\\x20", " ", vl)
+    vl = gsub("\\\\u00F3", "ó", vl)
+    vl = gsub("\\\\x28", "(", vl)
+    vl = gsub("\\\\x29", ")", vl)
+    vl = gsub("\\\\x2F", "/", vl)
+    vl = gsub("\\\\u00ED", "í", vl)
+    vl = gsub("\\\\u00E7", "ç", vl)
+    vl = gsub("\\\\u00E3", "ã", vl)
+    vl = gsub("\\\\u00E9", "é", vl)
+    vl = gsub("\\\\u00EA", "ê", vl)
+    vl = gsub("'", "", vl)
+    vl = gsub(",", "", vl)
+    finallist = rbind(finallist, vl)
+  }
+  return(finallist)
+}
+
+dadospl = c()
+nrow(dadospl)
+length(dadospl[!duplicated(dadospl)])
+
+for(l in vmercadofinal$link[511:nrow(vmercadofinal)]){
+  
+  mk = gsub("profil", "marktwertverlauf", l)
+  ws3 = read_html(mk)
+  js = ws3 %>% html_node("body") %>% html_nodes("script") %>% "["(18) %>% html_text()
+  clubes = c()
+  vm = c()
+  dates = c()
+  clubes = getjsdata("'verein':", js)
+  vm = getjsdata("'y':", js)
+  dates = getjsdata("'datum_mw':", js)
+  tabplayer = cbind(dates, clubes, vm)
+  dates = as.Date(tabplayer[,1], format='%d/%m/%Y')
+  dadospl = rbind(dadospl, tabplayer[min(which(dates > as.Date('2017/12/03'))),])
+}
+
+newvm = cbind(vmercadofinal, dadospl)
+
+VMfinal <- newvm
+
+VMfinal$vmpos <- VMfinal$X3
+VMfinal$clubedest <- VMfinal$X2
+VMfinal$datapos <- VMfinal$X1
+
+VMfinal$varVM <- (VMfinal$vmpos - VMfinal$vmpre)
+
+VMfinal$X1 <- NULL
+VMfinal$X2 <- NULL
+VMfinal$X3 <- NULL
+
+VMercado <- VMfinal
+
+# FAZER FOR PARA PEGAR AS INFORMACOES DOS TRANSFERIDOS. PEGAR TABELA IN E OUT DE TODOS E DEPOIS ELIMINAR AS LINHAS DUPLICADAS.
+
+tabelatransf = data.frame(clube = as.character(), player = as.character(), vtransf = as.character(), fees = as.character(), clubedest = as.character())
+transfinal = data.frame(clube = as.character(), player = as.character(), vtransf = as.character(), fees = as.character(), clubedest = as.character())
+
+nr = nrow(transfclubes)
+
+for (i in (1:nr))
+{
+  link <- paste0("",transfclubes[i,],"")
+  ws <- read_html(link)
+  
+  clube <- ws %>% html_nodes(".dataName span") %>% html_text() %>% as.character()
+  
+  #atleta 
+  temp6 <- ws %>% html_nodes(".spielprofil_tooltip") %>% html_text() %>% as.character()
+  
+  #clube de destino / origem 
+  
+  temp7 <- ws %>% html_nodes(".zentriert+ td .hauptlink a") %>% html_text() %>% as.character()
+  
+  # valor de mercado dos jogadores transferidos
+  temp8 <- ws %>% html_nodes(".responsive-table .zentriert+ td.rechts") %>% html_text() %>% as.character()
+  
+  # multa rescisória (fees)
+  temp9 <- ws %>% html_nodes(".rechts a") %>% html_text() %>% as.character()
+  
+  tabelatransf <- cbind(clube, temp6, temp7, temp8, temp9)
+  transfinal <- rbind(transfinal, tabelatransf)
+}
+
+
+transfinal <- setNames(transfinal, c("clube", "player", "vtransf", "fees", "clubedest"))
+
+
+#Separar por Clube atual (na temporada do campeonado 2017) - Aqui vamos separar aqueles que entraram em um clube (ja listado na tabela VMercado) e os que sairam do clube (exatamente o dado que queremos sobre transferencia)
+
+subsclube <- c("São Paulo", 
+               "Flamengo", 
+               "Atlético-MG", 
+               "Cruzeiro", 
+               "Palmeiras", 
+               "Grêmio", 
+               "Santos FC", 
+               "Corinthians", 
+               "Atlético-PR", 
+               "Sport Recife", 
+               "EC Vitória", 
+               "Chapecoense", 
+               "Fluminense", 
+               "Vasco da Gama", 
+               "EC Bahia", 
+               "Ponte Preta", 
+               "Botafogo", 
+               "Coritiba FC", 
+               "Atlético-GO", 
+               "Avaí FC" )
+
+levels(VMercado$clube)=subsclube
+
+VMercado$player <- as.character(VMercado$player)
+tabelatransf$player <- as.character(tabelatransf$player)
+
+VMercado$clube <- as.character(VMercado$clube)
+tabelatransf$clubedest <- as.character(tabelatransf$clubedest)
+
+tabelatransf$vtransf <- as.character(tabelatransf$vtransf)
+tabelatransf$fees <- as.character(tabelatransf$fees)
+
+reps = c()
+VMercado["vmpos"] = as.character("")
+VMercado["clubedest"] = as.character("")
+VMercado["transf"] = as.character("")
+a=1
+for (y in c(1:nrow(VMercado)))
+{
+  temp10 <- which(tabelatransf$player == VMercado[y,2] & tabelatransf$clubedest != VMercado[y,1])
+  VMercado[y, "vmpos"] = as.character(tabelatransf[temp10[1], 2])
+  VMercado[y, "clubedest"] = as.character(tabelatransf[temp10[1], 4])
+  VMercado[y, "transf"] = as.character(tabelatransf[temp10[1], 3])
+  if (length(temp10)>1){
+    reps[a] = tabelatransf[temp10[2:length(temp10)], 1:4]
+    a=a+1
+  }
+}
+transffinal <- which(VMercado$player == tabelatransf$player & VMercado$clube != tabelatransf$clubedest)
+
+
+
+#Trazendo dados de transferencia para a tabela de Valor de Mercado
+#Vamos construir a coluna de status, com variaveis categoricas sobre a movimentacao de cada jogador. 
+#"Vendido", "Emprestado", "Fim de empréstimo", "Troca", "Transferência sem custo", "Mantido no clube", "Aposentado"
+
+VMercado$vtransf <- "";
+VMercado$clubedest <- "";
+VMercado$vfees <- "";
+VMercado$status <- "";
+VMercado$datapos <- "";
+x=0;
+
+for (u in VMercado$player) 
+{
+  x = x+1;
+  print(u)
+  
+  if (u %in% tabelatransf$player)
+  {
+    VMercado$vtransf[x] <- as.character(tabelatransf$vtransf[tabelatransf["player"]==u])
+    VMercado$clubedest[x] <- as.character(tabelatransf$clubedest[tabelatransf["player"]==u])
+    VMercado$vfees[x] <- as.character(tabelatransf$fees[tabelatransf["player"]==u])
+  }
+} 
+
+#Categorias "Vendido", "Empréstimo", "Fim de empréstimo", "Troca", "Transferência sem custo", "Mantido no clube", "Aposentado"
+
+l=VMercado$transf
+
+l[startsWith(l,"End of loan")] <- "Fim de empréstimo"
+l[l == "Free Transfer"] <- "Transferência sem custo"
+l[startsWith(l,"Loan fee")] <- "Empréstimo"
+l[l == "Loan"] <- "Empréstimo sem custo"
+l[l == "Swap deal"] <- "Troca"
+l [l == "-"] <- "Mantido no clube"
+l [l == "?"] <- "Mantido no clube"
+l[endsWith(l,"???")] <- "Vendido"
+
+VMercado$status = l
+
+w = VMercado$transf
+
+for (s in w) {
+  
+  if ( is.na(s) == FALSE && startsWith(s,"End of loan") == TRUE)
+  {
+    VMercado$datapos[VMercado$transf == s] <- str_sub(s, start=12)
+  }
+  
+}
+
+colnames(VMercado) <- c("clube","player", "vmpre","dnasc", "vmpos", "clubedest", "ELIMINAR", "ELIMINAR2", "vtransf", "status", "datapos")
+VMercado <- VMercado[,-c(7,8)]
+
+for (u in VMercado$clubedest)
+{
+  if (u == "Retired")
+  {
+    VMercado$status[VMercado$clubedest == u] <- "Aposentado"
+  }
+}
+
+VMercado$vtransf[!endsWith(VMercado$vtransf,"???")] <- NA
+
+for (x in VMercado$vmpre)
+{  
+  if (startsWith(x,"-") == TRUE)
+  {
+    VMercado$vmpre[VMercado$vmpre == x]<- NA
+  }
+}
+
+q = VMercado$vtransf
+
+for (s in q) {
+  
+  if ( is.na(s) == FALSE && startsWith(s,"Loan fee:") == TRUE)
+  {
+    VMercado$vtransf[VMercado$vtransf == s] <- str_sub(s, start=10)
+  }
+  
+}
+
+#PADRONIZANDO EM NUMERICO AS COLUNAS DE VALOR EM EUROS // TODOS OS VALORES DEVEM SER MULTIPLICADOS POR 1.000.000
+
+VM = as.character(VMercado$vmpre)
+x=0
+
+for (u in VM)
+{
+  x=x+1
+  if (!is.na(u) && str_detect(u,"Mill"))
+  {
+    VM[x] <- str_sub(u, end = 4)
+    VM[x] <- str_replace(VM[x],",",".")  
+  } 
+  
+  if (!is.na(u) && str_detect(u,"Th"))
+  {
+    VM[x] <- str_sub(u, end = 3)
+    VM[x] <- paste0("0.",VM[x],collapse=NULL)
+  }
+} 
+VM = as.numeric(VM)
+VM = VM * 1000000
+VMercado$vmpre = as.numeric(VM)
+
+# O mesmo para vmpos
+
+VM = as.character(VMercado$vmpos)
+x=0
+
+for (u in VM)
+{
+  x=x+1
+  if (!is.na(u) && str_detect(u,"Mill"))
+  {
+    VM[x] <- str_sub(u, end = 4)
+    VM[x] <- str_replace(VM[x],",",".")  
+  } 
+  
+  if (!is.na(u) && str_detect(u,"Th"))
+  {
+    VM[x] <- str_sub(u, end = 3)
+    VM[x] <- paste0("0.",VM[x],collapse=NULL)
+  }
+} 
+VM = as.numeric(VM)
+VM = VM * 1000000
+VMercado$vmpos = as.numeric(VM)
+
+# O mesmo para vtransf
+
+VM = as.character(VMercado$vtransf)
+x=0
+
+for (u in VM)
+{
+  x=x+1
+  if (!is.na(u) && str_detect(u,"Mill"))
+  {
+    VM[x] <- str_sub(u, end = 4)
+    VM[x] <- str_replace(VM[x],",",".")  
+  } 
+  
+  if (!is.na(u) && str_detect(u,"Th"))
+  {
+    VM[x] <- str_sub(u, end = 3)
+    VM[x] <- paste0("0.",VM[x],collapse=NULL)
+  }
+} 
+VM = as.numeric(VM)
+VM = VM * 1000000
+VMercado$vtransf = as.numeric(VM)
+
+
+
+#Ajustando status dos que foram contratados dentro do próprio clube para renovação
+
+x=1
+nr = nrow(VMercado)
+
+for (x in (1:nr))
+{
+  if (is.na(VMercado$clubedest[x]) == FALSE && VMercado$clube[x] == VMercado$clubedest[x] && is.na(VMercado$status[x]) == FALSE && VMercado$status[x] == "Vendido")
+  {
+    VMercado$status[x] <- "Renovação"
+  }
+}
+
+# Tratar os jogadores com "Without Club" na coluna clubedest e status "Mantido no clube"
+
+x=1
+nr = nrow(VMercado)
+
+for (x in (1:nr))
+{
+  if (is.na(VMercado$clubedest[x]) == FALSE && VMercado$clubedest[x] == "Without Club" && is.na(VMercado$status[x]) == FALSE && VMercado$status[x] == "Mantido no clube")
+  {
+    VMercado$status[x] <- "Sem clube"
+  }
+}
+
+#Corrigindo formato de data
+
+datas <- VMercado$dnasc
+
+datas <- str_sub(datas, end =-6)
+mes <- str_sub(datas, end =3)
+ano <- str_sub(datas, start=-4)
+dia <- str_sub(datas, start=5, end =6)
+
+mes[mes == "Jan"] <- "01"
+mes[mes == "Feb"] <- "02"
+mes[mes == "Mar"] <- "03"
+mes[mes == "Apr"] <- "04"
+mes[mes == "May"] <- "05"
+mes[mes == "Jun"] <- "06"
+mes[mes == "Jul"] <- "07"
+mes[mes == "Aug"] <- "08"
+mes[mes == "Sep"] <- "09"
+mes[mes == "Oct"] <- "10"
+mes[mes == "Nov"] <- "11"
+mes[mes == "Dec"] <- "12"
+
+dia <- str_replace(dia,",","")
+for (i in (1:length(dia)))
+{
+  if (nchar(dia[i]) == 1)
+  {
+    dia[i] <- paste0("0",dia[i])
+  }
+}
+
+datas <- paste0(ano,"-",mes,"-",dia)
+VMercado$dnasc <- datas
+
+#Conexao com o BD
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+
+# CONSULTA DOS ATLETAS - Selecionamos todas as linhas da tabela.
+
+query = paste("SELECT DISTINCT Atletas.IDAtletas, Atletas.PNome, Atletas.SNome, Atletas.Nasc, Equipes.IDEquipes, Equipes.Nome FROM Atletas, Equipes, Eventos WHERE Eventos.IDAtletaEv = Atletas.IDAtletas AND Eventos.Equipe = Equipes.IDEquipes")
+c = dbSendQuery(con,query)
+atletasopta = dbFetch(c)
+dbClearResult(c)
+
+atletasopta <- atletasopta[atletasopta$IDAtletas!=888,]
+
+#AJUSTANDO VARIAVEIS COM ACENTO ERRADO
+
+temp13 <- atletasopta
+nr = nrow(temp13)
+
+for (x in (1:nr))
+{
+  temp13$PNome[x]<- gsub("Ã???","É",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã???","É",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã???","É",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ãª","ê",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ãª","ê",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ãª","ê",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã³","ó",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã³","ó",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã³","ó",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã§","ç",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã§","ç",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã§","ç",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã£","ã",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã£","ã",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã£","ã",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã¡","á",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã¡","á",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã¡","á",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã©","é",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã©","é",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã©","é",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ãº","ú",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ãº","ú",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ãº","ú",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã´","ô",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã´","ô",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã´","ô",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ãµ","õ",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ãµ","õ",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ãµ","õ",temp13$Nome[x])
+  
+  temp13$PNome[x]<- gsub("Ã","í",temp13$PNome[x])
+  temp13$SNome[x]<- gsub("Ã","í",temp13$SNome[x])
+  temp13$Nome[x]<- gsub("Ã","í",temp13$Nome[x])
+}
+
+atletasopta <- temp13
+rownames(atletasopta) <- 1:nrow(atletasopta)
+
+#Eliminando os atletas que estão na tabela VMercado mas não estão na base extraída da OPTA (APENAS ATLETAS COM EVENTOS ASSOCIADOS), pois estes não jogaram na temporada
+
+listaclubes <- c("São Paulo", 
+                 "Flamengo", 
+                 "Atlético-MG", 
+                 "Cruzeiro", 
+                 "Palmeiras", 
+                 "Grêmio", 
+                 "Santos FC", 
+                 "Corinthians", 
+                 "Atlético-PR", 
+                 "Sport Recife", 
+                 "EC Vitória", 
+                 "Chapecoense", 
+                 "Fluminense", 
+                 "Vasco da Gama", 
+                 "EC Bahia", 
+                 "Ponte Preta", 
+                 "Botafogo", 
+                 "Coritiba FC", 
+                 "Atlético-GO", 
+                 "Avaí FC" )
+IDclubes <- c(451,
+              1029,
+              1373,
+              764,
+              625,
+              1339,
+              1303,
+              609,
+              2572,
+              2575,
+              2576,
+              8634,
+              1734,
+              2308,
+              1578,
+              4744,
+              1419,
+              2477,
+              1062,
+              1407)
+
+listaclubes <- cbind(IDclubes,listaclubes)
+listaclubes <- as.data.frame(listaclubes)
+VM <- VMercado
+VM$IDatleta <- 0
+VM$IDclube <- 0 
+
+for (i in (1:nrow(VM)))
+{
+  if (VM$clube[i] %in% listaclubes$listaclubes)
+  {
+    VM$IDclube[i] <- as.character(listaclubes$IDclubes[listaclubes$listaclubes == VM$clube[i]])  
+  }
+}
+
+
+for (x in (1:nrow(VM)))
+{
+  
+  for (y in (1:nrow(atletasopta)))
+  {
+    
+    if ((VM$IDclube[x] == atletasopta$IDEquipes[y]) && (as.Date(VM$dnasc[x]) == atletasopta$Nasc[y])) 
+    {
+      VM$IDatleta[x] <- as.character(atletasopta$IDAtletas[y])      
+    }
+  }
+}
+
+FORA <- atletasopta[!(atletasopta$IDAtletas %in% VM$IDatleta),]
+
+# CHECAR NA TABELA FORA OS 27 JOGADORES QUE DEVERIAM DAR MATCH NA TABELA VM, MAS TIVERAM VALOR 0. 
+VM$IDatleta[151] <- 50037
+VM$IDatleta[507] <- 182586
+VM$dnasc <- as.Date(VM$dnasc)
+VM$dnasc[685] <- '1989-09-16'
+VM$IDatleta [685] <- 116638
+VM$dnasc[75]<-'1992-03-12'
+VM$IDatleta [75] <- 116414
+VM$dnasc [133] <- '1999-10-24'
+VM$IDatleta [133]<- 428586
+VM$dnasc [62] <- '1988-09-17'
+VM$IDatleta[62] <- 164410
+VM$IDatleta[598] <- 167059
+VM$dnasc[332] <- '1994-06-19'
+VM$IDatleta[332] <- 184598
+VM$dnasc[734] <- '1989-05-15' 
+VM$IDatleta[734] <- 167398
+VM$dnasc[66] <- '1992-08-25' 
+VM$IDatleta [66] <- 185441 
+VM$dnasc [451] <- '1987-07-14'
+VM$IDatleta [451] <- 182866
+VM$clubedest[198] <- "Atlético-MG"
+VM$vmpre[198] <- 1750000
+VM$vmpos[198] <- 2250000
+VM$dnasc[198] <- '1995-02-01'
+VM$status[198] <- 'Empréstimo'
+VM$datapos <- as.character(VM$datapos)
+VM$datapos[198] <- 'Dec 07, 2017'
+VM$IDatleta[198] <- 213551
+VM$IDatleta [578] <- 199038
+VM$dnasc [582] <- '1996-03-06'
+VM$IDatleta [582] <- 173901
+VM$dnasc [696] <- '1986-04-08'
+VM$dnasc [449] <- '1990-10-03'
+VM$IDatleta[449] <- 224331
+
+
+#removendo jogador Igor Cassio - consta na base do TM, mas não na OPTA - não jogou. 
+VM <- VM[-806,]
+#removendo jogador Rickson - consta na base do TM, mas não na OPTA - não jogou. 
+VM <- VM[-781,]
+#removendo registro duplicado do jogador Juninho - Palmeiras
+VM <- VM[-232,]
+
+rownames(VM) <- 1:nrow(VM)
+
+# ALGUNS ESTAO COM DATA DE NASCIMENTO ERRADA NA BASE DA OPTA, AJUSTAR DATAS DIRETAMENTE EM SCRIPT NO SQL E RODAR NOVAMENTE O ID ATLETA
+
+for (x in (1:nrow(VM)))
+{
+  
+  for (y in (1:nrow(atletasopta)))
+  {
+    
+    if ((VM$IDclube[x] == atletasopta$IDEquipes[y]) && (as.Date(VM$dnasc[x]) == atletasopta$Nasc[y])) 
+    {
+      VM$IDatleta[x] <- as.character(atletasopta$IDAtletas[y])      
+    }
+  }
+}
+
+FORA <- atletasopta[!(atletasopta$IDAtletas %in% VM$IDatleta),]
+
+#Inserindo os que sobraram agora
+
+VM$IDatleta[595] <- 428402
+VM$IDatleta[593] <- 219357
+VM$IDatleta[151] <- 50037
+VM$IDatleta[551] <- 177009
+VM$IDatleta[595] <- 248566
+
+VM <- VM[!VM$IDatleta == 0,]
+
+VMercado <- VM
+
+# Colocando o formato de data no mesmo do que ja foi salvo no SQL
+# Formato atual %b %d, %Y
+# Quero %d-%m-%Y
+
+temp14 <- VMercado$datapos
+
+temp14 = gsub("Jan ","01-",temp14)
+temp14 = gsub("Feb ","02-",temp14)
+temp14 = gsub("Mar ","03-",temp14)
+temp14 = gsub("Apr ","04-",temp14)
+temp14 = gsub("May ","05-",temp14)
+temp14 = gsub("Jun ","06-",temp14)
+temp14 = gsub("Jul ","07-",temp14)
+temp14 = gsub("Aug ","08-",temp14)
+temp14 = gsub("Sep ","09-",temp14)
+temp14 = gsub("Oct ","10-",temp14)
+temp14 = gsub("Nov ","11-",temp14)
+temp14 = gsub("Dec ","12-",temp14)
+temp14 = gsub(", ","-",temp14)
+
+temp14 <- as.Date(temp14,"%m-%d-%Y")
+
+VMercado$datapos <- temp14
+
+#PARA FACILITAR O TRABALHO, ESTOU MANTENDO OS DADOS DE VMERCADO EM UM CSV PARA QUE NAO SEJA MAIS NECESSARIO EXECUTAR O WEBSCRAP
+
+write.csv(VMercado,file = "C:/Users/Nadinne/Desktop/PG/BDados/VMercado.csv")
+
+
+#Retirando do BD a contagem dos eventos que será utilizada na análise
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+# string para query
+
+query = ("SELECT E.IDAtletaEv, E.Tipo AS Evento, Q.IDQualificador AS Qualif, COUNT (E.Tipo) AS ContEventos 
+         FROM Eventos AS E, Qualificadorespevento AS Q WHERE E.IDUnicoEvento = Q.IDUnicoEvento	AND E.IDAtletaEv <> 888 
+         GROUP BY E.IDAtletaEv, E.Tipo, Q.IDQualificador ORDER BY E.IDAtletaEv, E.Tipo")
+
+# Em seguida executamos a query
+
+q = dbSendQuery(con,query)
+tabelacont = dbFetch(q)
+dbClearResult(q)
+
+# Concatenar as colunas Evento e Qualif para uma coluna só, separada por traço(PADRÃO: Evento-Qualif)
+
+temp1 = tabelacont[,-1]
+temp1 = temp1[,-3]
+temp1 = paste0(temp1$Evento, "-", temp1$Qualif)
+tabelacont <- tabelacont[,-3]
+tabelacont[,2] <- temp1
+colnames(tabelacont) <- c("IDAtleta","EventoQualif","ContEventos")
+
+# Transpor as linhas Evento-Qualif para colunas e a contagem para uma linha por ID Atleta (pivô)
+
+temp2 <- dcast(tabelacont, IDAtleta ~ EventoQualif, sum)
+tabelacont <- temp2
+
+# Fazer webscrap da página de stats dos atletas pegando o tempo em jogo deles para fazer uma coluna e gerar a informação de frequência
+
+page <- "https://www.transfermarkt.com/campeonato-brasileiro-serie-a/startseite/wettbewerb/BRA1/plus/?saison_id=2016"
+
+scraped_page <- read_html(page)
+
+Links <- scraped_page %>% html_nodes("#yw1 .vereinprofil_tooltip") %>% html_attr('href') %>% as.character()
+
+Linksdf = paste0("https://www.transfermarkt.com", Links)
+
+Linksdf = as.data.frame(Linksdf)
+
+Linksdf = Linksdf[!duplicated(Linksdf),]
+
+Linksdf <- setNames(Linksdf, c("URL"))
+
+# Criando dataframe onde serao imputados os dados de atleta
+
+Linkplayers = data.frame(player = as.character(),URL=as.character())
+
+#Loop para fazer o webscrap dos links de atletas
+
+for (i in Linksdf)
+{
+  
+  ws1 = read_html(i) 
+  Player = ws1 %>% html_nodes("#yw1 .spielprofil_tooltip") %>% html_text() %>% as.character()
+  Club = ws1 %>% html_nodes(".dataName") %>% html_nodes('span') %>% html_text() %>% as.character()
+  Links2 = ws1 %>% html_nodes("#yw1 .spielprofil_tooltip") %>% html_attr('href') %>% as.character()  
+  URL = paste0("https://www.transfermarkt.com", Links2) 
+  temp = data.frame(Player,Club, URL)
+  Linkplayers <- rbind(Linkplayers,temp)  
+  cat(paste("Página",i,"foi processada\n",sep=" "))
+  
+}
+
+#Corrigindo a informação que vem duplicada, uma linha com o nomee outra com o nome abreviado do mesmo jogador
+
+norows <- nrow(Linkplayers)
+odd_indexes<-seq(1,norows,2)  
+Linkplayers <- data.frame(Linkplayers[odd_indexes,])
+
+temp3 <- gsub("profil/","leistungsdatendetails/",Linkplayers$URL)
+temp3 <- paste0(temp3,"/saison/2016/",sep=NULL)
+Linkplayers$URL <- temp3
+
+temp4 <- data.frame(Atleta = as.character(), MP = as.character(), PPM = as.character(), TF = as.character())
+
+j=0
+
+for (i in temp3)
+{
+  j=j+1
+  ws = read_html(i)
+  CAMP = ws %>% html_nodes(".odd:nth-child(1) .no-border-links a") %>% html_text() %>% as.character()
+  
+  if (length(CAMP) != 0L)
+  {
+    if (CAMP == "Série A")
+    {
+      # MP - Matches played
+      MP = ws %>% html_nodes(".odd:nth-child(1) .no-border-rechts+ .zentriert") %>% html_text() %>% as.character()
+      # PPM - Points per match
+      PPM = ws %>% html_nodes(".odd:nth-child(1) .zentriert:nth-child(5)") %>% html_text() %>% as.character()
+      # TF - Time in field / minutes played
+      TF = ws %>% html_nodes(".odd:nth-child(1) .rechts") %>% html_text() %>% as.character()  
+    } 
+    else
+    {
+      CAMP = ws %>% html_nodes(".even:nth-child(2) .no-border-links a") %>% html_text() %>% as.character()
+      
+      if (CAMP == "Série A" && length(CAMP) != 0L)
+      {
+        # MP - Matches played
+        MP = ws %>% html_nodes(".even:nth-child(2) .no-border-rechts+ .zentriert") %>% html_text() %>% as.character()
+        # PPM - Points per match
+        PPM = ws %>% html_nodes(".even:nth-child(2) .zentriert:nth-child(5)") %>% html_text() %>% as.character()
+        # TF - Time in field / minutes played
+        TF = ws %>% html_nodes(".even:nth-child(2) .rechts") %>% html_text() %>% as.character()  
+      } else
+        {
+          CAMP = ws %>% html_nodes(".odd:nth-child(3) .no-border-links a") %>% html_text() %>% as.character()
+          
+          if (CAMP == "Série A" && length(CAMP) != 0L)
+          {
+            # MP - Matches played
+            MP = ws %>% html_nodes(".odd:nth-child(3) .no-border-rechts+ .zentriert") %>% html_text() %>% as.character()
+            # PPM - Points per match
+            PPM = ws %>% html_nodes(".odd:nth-child(3) .zentriert:nth-child(5)") %>% html_text() %>% as.character()
+            # TF - Time in field / minutes played
+            TF = ws %>% html_nodes(".odd:nth-child(3) .rechts") %>% html_text() %>% as.character()  
+          } else
+          {
+            CAMP = ws %>% html_nodes(".even:nth-child(4) .no-border-links a") %>% html_text() %>% as.character()
+            
+            if (CAMP == "Série A" && length(CAMP) != 0L)
+            {
+              # MP - Matches played
+              MP = ws %>% html_nodes(".even:nth-child(4) .no-border-rechts+ .zentriert") %>% html_text() %>% as.character()
+              # PPM - Points per match
+              PPM = ws %>% html_nodes(".even:nth-child(4) .zentriert:nth-child(5)") %>% html_text() %>% as.character()
+              # TF - Time in field / minutes played
+              TF = ws %>% html_nodes(".even:nth-child(4) .rechts") %>% html_text() %>% as.character()  
+            } else
+            {
+              CAMP = ws %>% html_nodes(".odd:nth-child(5) .no-border-links a") %>% html_text() %>% as.character()
+              
+              if (CAMP == "Série A" && length(CAMP) != 0L)
+              {
+                # MP - Matches played
+                MP = ws %>% html_nodes(".odd:nth-child(5) .no-border-rechts+ .zentriert") %>% html_text() %>% as.character()
+                # PPM - Points per match
+                PPM = ws %>% html_nodes(".odd:nth-child(5) .zentriert:nth-child(5)") %>% html_text() %>% as.character()
+                # TF - Time in field / minutes played
+                TF = ws %>% html_nodes(".odd:nth-child(5) .rechts") %>% html_text() %>% as.character()  
+              } else 
+                {
+                # MP - Matches played
+                MP = "-"
+                # PPM - Points per match
+                PPM = "-"
+                # TF - Time in field / minutes played
+                TF = "-"
+                }
+            }
+          }
+        }
+      } 
+    } else 
+      {
+        # MP - Matches played
+        MP = "-"
+        # PPM - Points per match
+        PPM = "-"
+        # TF - Time in field / minutes played
+        TF = "-"
+      }
+  temp = data.frame(Linkplayers$Player[j],MP, PPM, TF)
+  temp4 <- rbind(temp4,temp)
+  cat(j)
+}
+
+n <- nrow(temp4)
+colnames (temp4) <- c("Atleta","MP","PPM","TF")
+VMercado$MP <- as.character(" ")
+VMercado$PPM <- as.character(" ")
+VMercado$TF <- as.character(" ")
+
+subsclube <- c("São Paulo", 
+               "Flamengo", 
+               "Atlético-MG", 
+               "Cruzeiro", 
+               "Palmeiras", 
+               "Grêmio", 
+               "Santos FC", 
+               "Corinthians", 
+               "Atlético-PR", 
+               "Sport Recife", 
+               "EC Vitória", 
+               "Chapecoense", 
+               "Fluminense", 
+               "Vasco da Gama", 
+               "EC Bahia", 
+               "Ponte Preta", 
+               "Botafogo", 
+               "Coritiba FC", 
+               "Atlético-GO", 
+               "Avaí FC" )
+
+levels(Linkplayers$Club)=subsclube
+
+temp4$clube <- Linkplayers$Club
+
+for (i in (1:n))
+{
+  for (j in (1:nrow(VMercado)))
+  {
+      if (temp4$Atleta[i] == VMercado$player[j] && temp4$clube[i] == VMercado$clube[j])
+      {
+        VMercado$MP[j] <- as.character(temp4$MP[i])
+        VMercado$PPM[j] <- as.character(temp4$PPM[i])
+        VMercado$TF[j] <- as.character(temp4$TF[i])
+      }  
+  }
+  cat(paste0(i," - "))
+}
+  
+# write.csv(VMercado,"C:/Users/Nadinne/Desktop/PG/BDados/VMercado.csv")
+# write.csv(tabelacont,"C:/Users/Nadinne/Desktop/PG/BDados/TAnalise.csv")
+
+# Pegando os demais dados dos atletas
+
+con <- dbConnect(odbc::odbc(),"CONEXAODBBR2017")
+
+# string para query.
+
+p = paste0(VMercado$IDatleta, collapse=",")
+
+query = paste0("SELECT A.IDAtletas, A.MassaC, A.Estatura, A.Posicao, A.Nacionalidade FROM Atletas AS A WHERE A.IDAtletas IN (",p,")")
+
+# Em seguida executamos a query.
+
+q = dbSendQuery(con,query)
+temp5 = dbFetch(q)
+dbClearResult(q)
+
+VMercado$peso <- " "
+VMercado$altura <- " "
+VMercado$posicao <- " "
+VMercado$nacionalidade <- " "
+
+for (i in (1:nrow(temp5)))
+{
+  for (j in (1:nrow(VMercado)))
+  {
+    if (temp5$IDAtletas[i] == VMercado$IDatleta[j])
+    {
+      VMercado$peso[j] <- as.character(temp5$MassaC[i])
+      VMercado$altura[j] <- as.character(temp5$Estatura[i])
+      VMercado$posicao[j] <- as.character(temp5$Posicao[i])
+      VMercado$nacionalidade[j] <- as.character(temp5$Nacionalidade[i])
+    }  
+  }
+  cat(paste0(i," - "))
+}
+
+# Combinar tabelacont com a tabela VM através do IDAtleta = TAPG
+
+VMercado <-VMercado %>% select(link,IDatleta, player, dnasc, peso, altura, nacionalidade, posicao, IDclube, clube, vmpre,vmpos,varVM,vtransf,datapos,clubedest,status, MP, PPM, TF)
+VMercado$TF <- gsub("'", "", VMercado$TF)
+VMercado$TF <- gsub("\\.","",VMercado$TF)
+VMercado$TF <- as.numeric(VMercado$TF)
+
+
+VMercado$vmpos[VMercado$player == "Ralph"] <- 0
+VMercado$status[VMercado$player == "Ralph"] <- "Atleta de Base"
+VMercado$status <- as.character(VMercado$status)
+VMercado$datapos <- as.character(VMercado$datapos)
+VMercado$clubedest <- as.character(VMercado$clubedest)
+VMercado$link <- as.character(VMercado$link)
+
+VMercado$vmpos[VMercado$player == "Emanuel Moura"] <- 0
+VMercado$status[VMercado$player == "Emanuel Moura"] <- "Atleta de Base"
+
+VMercado$vmpos[VMercado$player == "Conrado"] <- 0
+VMercado$status[VMercado$player == "Conrado"] <- "Atleta de Base"
+
+VMercado$vmpos[VMercado$player == "Felipe Felippi"] <- 0
+VMercado$status[VMercado$player == "Felipe Felippi"] <- "Atleta de Base"
+
+VMercado$vmpos[VMercado$player == "Jean Pyerre"] <- 0
+VMercado$status[VMercado$player == "Jean Pyerre"] <- "Atleta de Base"
+
+VMercado$vmpos[VMercado$player == "Pepê"] <- 0
+VMercado$status[VMercado$player == "Pepê"] <- "Atleta de Base"
+
+VMercado$vmpos[VMercado$IDatleta == 432232] <- 0
+VMercado$status[VMercado$IDatleta == 432232] <- "Atleta de Base"
+
+VMercado$vmpos[VMercado$IDatleta == 5077] <- 0
+
+VMercado$vmpos[VMercado$IDatleta == 196419] <- VMercado$vmpre[VMercado$IDatleta == 196419]
+
+VMercado$vmpos[VMercado$IDatleta == 429161] <- 745000
+  VMercado$vmpre[VMercado$IDatleta == 429161] <- 745000
+
+  VMercado$vmpos[VMercado$IDatleta == 216010] <- 200000
+  VMercado$vmpre[VMercado$IDatleta == 216010] <- 200000  
+
+  VMercado$vmpos[VMercado$IDatleta == 17888] <- 500000
+  VMercado$vmpre[VMercado$IDatleta == 17888] <- 500000  
+  VMercado$datapos[VMercado$IDatleta == 17888] <- "12/07/2017"
+  
+  VMercado$vmpos[VMercado$IDatleta == 53864] <- 750000
+  VMercado$clubedest[VMercado$IDatleta == 53864] <- "Santa Cruz"  
+  VMercado$datapos[VMercado$IDatleta == 53864] <- "23/07/2017"
+  VMercado$status[VMercado$IDatleta == 53864] <- "Transferência sem custo"
+
+  VMercado$vmpos[VMercado$IDatleta == 58758] <- 1000000
+  VMercado$clubedest[VMercado$IDatleta == 58758] <- "MX Techand"  
+  VMercado$datapos[VMercado$IDatleta == 58758] <- "01/01/2018"
+  VMercado$status[VMercado$IDatleta == 58758] <- "Transferência sem custo"
+  
+  VMercado$vmpos[VMercado$IDatleta == 106915] <- 2000000
+  VMercado$clubedest[VMercado$IDatleta == 106915] <- "Linense"  
+  VMercado$datapos[VMercado$IDatleta == 106915] <- "15/01/2018"
+  VMercado$status[VMercado$IDatleta == 106915] <- "Vendido"
+  VMercado$link[VMercado$IDatleta == 106915] <- "https://www.transfermarkt.pt/fernandinho/profil/spieler/80131"
+  
+  VMercado$vmpre[VMercado$IDatleta == 183716] <- 550000
+  VMercado$vmpos[VMercado$IDatleta == 183716] <- 550000
+  VMercado$clubedest[VMercado$IDatleta == 183716] <- "Rio Claro FC"  
+  VMercado$datapos[VMercado$IDatleta == 183716] <- "05/12/2017"
+  VMercado$status[VMercado$IDatleta == 183716] <- "Empréstimo sem custo"
+  
+  VMercado$vmpre[VMercado$IDatleta == 55272] <- 2000000
+  VMercado$vmpos[VMercado$IDatleta == 55272] <- 2000000
+  VMercado$datapos[VMercado$IDatleta == 55272] <- "03/12/2017"
+  VMercado$status[VMercado$IDatleta == 55272] <- "Mantido no Clube"
+  VMercado$link[VMercado$IDatleta == 55272] <- "https://www.transfermarkt.pt/joao-paulo/profil/spieler/81670"
+    
+  VMercado$varVM = (VMercado$vmpos - VMercado$vmpre)
+  VMercado <- VMercado[-c(9,152),]
+#write.csv(VMercado,"C:/Users/Nadinne/Desktop/PG/BDados/VMercado.csv")
+  
+  # Unindo os dois dataframes por IDAtleta, tabelacont e VMercado
+  
+  TAPG <- merge(x = VMercado, y = tabelacont, by.x = "IDatleta", by.y = "IDAtleta", all = TRUE)
+
+# Limpeza dos dados  
+  
+  TAPG <- TAPG[!(is.na(TAPG$player)),] 
+  
+  TTr <- TAPG
+  TTr$idade = as.integer((as.Date("2017-01-01") - as.Date(TAPG$dnasc))/365)
+  TTr$idaderelativa = as.integer(1 + as.Date(TAPG$dnasc) - (as.Date(paste0(str_sub(TTr$dnasc, end=4),"-01-01"))))
+  TTr <- TTr[,-c(2,3,4,9,10,14,15,16,17)]
+
+
+  # Eliminar a os goleiros da base
+  TTr = TTr [!(TTr$posicao == "Goalkeeper"),]
+  
+  # Transpor as colunas de Posição e nacionalidade para variaveis categóricas como 0 e 1 em cada linha por ID Atleta (pivô)
+  
+  TTr = na.exclude(TTr)
+  TTr$nacionalidade[TTr$nacionalidade == "Brasileira"] <- "Brazil"
+  TTr$posicao <- gsub(" ","",TTr$posicao)
+
+  TTr$PPM = as.numeric(TTr$PPM)
+  MAPG = dummy.data.frame(TTr, names=colnames("name"), sep="_")
+  MAPG = MAPG[,-1]
+  
+  # Eliminando as colunas com poucos dados 
+  
+  px <- colnames(MAPG)
+  ts <- colSums(MAPG == 0, na.rm = TRUE)
+  tsb <- colSums(MAPG == 1, na.rm = TRUE)
+  
+  #AQUI DEFINIMOS QUE UM EVENTO com ocorrência menor que 15%, é irrelevante para a análise
+  
+  lim = nrow(MAPG)*0.85
+  
+  for (i in (1:length(px)))
+  {
+    if (ts[i] > lim || tsb[i] > lim) 
+    {
+      MAPG[[paste0(px[i],"")]] <- NULL 
+    }
+    
+  }
+  
+  #2a melhoria - fazer correlação - retirar aqueles com corr > 0.9
+  
+  # Matriz de correlação
+
+    flattenCorrMatrix <- function(cormat, pmat) {
+    ut <- upper.tri(cormat)
+    data.frame(
+      row = rownames(cormat)[row(cormat)[ut]],
+      column = rownames(cormat)[col(cormat)[ut]],
+      cor  =(cormat)[ut],
+      p = pmat[ut]
+    )
+  }
+  
+  
+  res1<- cor(MAPG, method = c("pearson"))
+
+  #retirar as variaveis fazendo a media entre as correlacoes deles com as demais variaveis e mantendo na base aquele que tem menor media (variavel mais independente,valiosa)
+  
+  for (i in (1:nrow(res1))) 
+  {
+    for (j in (1:ncol(res1)))
+    {
+      if ((res1[i,j] > 0.9) && (i != j))
+      {
+        media_varc = mean(res1[j,])
+        media_varl = mean(res1[i,])
+        if (media_varc < media_varl)
+        {
+          elim <- colnames(res1)[i]
+          MAPG[[paste0("",elim)]] <- NULL
+        }
+        else
+        {
+          elim <- colnames(res1)[j]
+          MAPG[[paste0("",elim)]] <- NULL
+        }
+        
+      }
+    }
+  }
+  
+  # Retirando da base os eventos que têm mesma representação - estão duplicados na base - e aqueles que não são dados de desempenho na partida
+  
+  py <- colnames(MAPG)
+  
+  for (i in (1:length(py)))
+  {
+    for (j in (1:length(py)))
+    {
+      if ((length(MAPG[[py[i]]]) != 0) && (length(MAPG[[py[j]]]) != 0))
+      {     
+        if ((sum(MAPG[[py[i]]] == MAPG[[py[j]]]) == nrow(MAPG)) && (i != j))
+        {
+          MAPG[[py[i]]] <- NULL
+          print(py[i])
+          print(py[j])
+        }
+      }
+    }
+  }
+  
+  
+  # Ajeitando os eventos que ficaram - eliminando aqueles que não são de desempenho e agrupando os que se referem ao mesmo evento, apenas com qualificadores diferentes
+  
+  MAPG = MAPG[,-c(3,4)]
+  MAPG = MAPG[,-which(names(MAPG) %in% c("X44.56", "X1.107", "X1.241", "X43.1", "X43.286", "X43.168", "X61.238", "X43.13", "X43.152", "X43.3", "X43.73",
+                                         "X1.279", "X4.241", "X13.108", "X56.56", "X15.26", "X10.239", "X43.15", "X43.265", "X16.78", "15.100", "X43.22", "X43.17", 
+                                         "X13.73", "X13.74", "X13.75"))]
+  
+  MAPG = MAPG[,-which(names(MAPG) %in% c('X1.233', 'X1.238', 'X12.233', 'X15.100', 'X15.108', 'X15.114', 'X15.133', 'X15.15', 'X15.17', 'X15.18', 'X15.214', 'X15.24', 'X15.25', 'X15.328', 'X15.63', 'X15.64', 'X15.76', 'X15.77', 'X15.78', 'X15.79', 'X15.80', 'X15.81', 'X16.16', 'X16.17', 'X16.18', 'X16.76', 'X16.80', 'X43.155', 'X43.167', 'X43.233', 'X43.285', 'X43.56', 'X5.233', 'X74.233'))]
+  
+  MAPG$X13GOL = MAPG$X13.63 + MAPG$X13.64 + MAPG$X13.77 + MAPG$X13.81
+  MAPG$X13FORA = MAPG$X13.120 + MAPG$X13.121+ MAPG$X13.83+ MAPG$X13.84+ MAPG$X13.85
+  MAPG$X16 = MAPG$X16.20 + MAPG$X16.72
+  MAPG$X6 = MAPG$X6.73 + MAPG$X6.75
+  MAPG$X15 = MAPG$X15.20 + MAPG$X15.72
+  MAPG$X13 = MAPG$X13.20 + MAPG$X13.72
+  
+  MAPG = MAPG[,-which(names(MAPG) %in% c("X16.20", "X16.72", "X6.73", "X6.74", "X6.75", "X15.20", "X15.72", "X13.20", "X13.72"))]
+  MAPG = MAPG[,-which(names(MAPG) %in% c('X13.63', 'X13.64', 'X13.77', 'X13.81','X13.120', 'X13.121', 'X13.83', 'X13.84', 'X13.85'))]
+  
+  
+  
+  # write.csv(MAPG,"C:/Users/Nadinne/Desktop/PG/BDados/MAPG.csv")
+
+
+  ##################### EXPLORAÇÃO DOS DADOS
+  
+  
+  # Verificação de distribuição normal dos VM
+  
+  hp<-qplot(MAPG$varVM, fill=..count.., geom="histogram", xlab = "Variação do valor de mercado", ylab = "Número de Atletas") 
+  hp+scale_fill_gradient(low="black", high="blue")
+  
+  # Gráficos de comportamento 
+  
+  par(mfrow = c(1,2), oma = c(4,1,1,1))
+  
+  plot(idade ~ varVM, data=MAPG, xlab = "varVM", ylab="Idade", main="Idade x varVM") +
+    with(MAPG,lines(lowess(x = varVM, y = idade), lwd = 2, col = "#ff0050"))
+  plot(TF ~ varVM, data=MAPG, xlab = "varVM", ylab="TF (minutos)", main="Tempo em campo x varVM") +
+    with(MAPG,lines(lowess(x = varVM, y = TF), lwd = 2, col = "#ff0050"))  
+  
+  
+  par(mfrow = c(1,2), oma = c(4,1,1,1))
+  
+  plot(X16 ~ varVM, data=MAPG, xlab = "varVM", ylab="Gols", main="Gols x varVM") +
+    with(MAPG,lines(lowess(x = varVM, y = X16), lwd = 2, col = "#ff0050"))
+  plot(vmpre ~ varVM, data=MAPG, xlab = "varVM", ylab="vmpre", main="Valor de mercado no início da temporada x varVM") +
+    with(MAPG,lines(lowess(x = varVM, y = vmpre), lwd = 2, col = "#ff0050"))  
+  
+  
+  ################## REGRESSÃO   
+      
+  # Algoritmo CV k-fold
+  
+  # Função que divide a amostra em k grupos
+  
+  kfold = function(train, k){
+    kprob = c(1:k)
+    kprob[]=1/k
+    amostra=sample(c(1:k), nrow(train), replace=TRUE, prob=kprob)
+    
+    return(amostra)
+  }
+
+  #Loop CV
+  
+  k=5
+  ktest = kfold(MAPG,k)
+  dataset = MAPG[,-c(4)]
+  Output = MAPG$varVM
+  rmse_final = c()
+  
+  for (n in 1:k)
+  {
+    modeldata = dataset[ktest!=n,]
+    testdata = dataset[ktest==n,]
+    OutputTest = Output[ktest==n]
+    
+    #Train
+    
+    # modelo - Regressão linear
+    modelolm <- lm(varVM ~ ., data = modeldata)  
+    
+    #Test
+    
+    testlm = predict(modelolm, testdata)
+
+    #Resultados
+    
+    results = data.frame(testlm, OutputTest)
+    names(results) = c("ModeloLM", "VariacaoVM")
+    
+    rmse_lm = rmse(OutputTest,testlm)
+    
+    rmse_final = cbind(rmse_final,rmse_lm)
+    
+  }
+  Mean <- mean(rmse_final[1,1:5])
+  rmse_final = cbind(rmse_final, Mean)
+  print(rmse_final)
+  
+  ################## REGRESSÃO COM CLASSIFICAÇÃO - RANDOM FORESTS
+  
+  
+  # Categorização - A: aumentou vm, M: manteve vm, D: diminuiu vm
+  
+  MAPG$catVM <- " "
+  MAPG$catVM[MAPG$varVM == 0] <- "M"
+  MAPG$catVM[MAPG$varVM < 0] <- "D"
+  MAPG$catVM[MAPG$varVM > 0] <- "A"
+  MAPG$catVM = as.factor(MAPG$catVM)
+  levels(MAPG$catVM) = as.factor(c("3","2","1")) # 1 = MANTEVE VM; 2 = DIMINUIU O VM; 3 = AUMENTOU O VM
+  
+  # CV KFOLD
+  
+  k=5
+  ktest = kfold(MAPG,k)
+  dataset = MAPG[,-c(4,5)]
+  Output = MAPG$catVM
+  results = c()
+  temp1 = data.frame()
+  
+  for (n in 1:k)
+  {
+    modeldata = dataset[ktest!=n,]
+    testdata = dataset[ktest==n,]
+    OutputTest = Output[ktest==n]
+    
+    #Train
+    
+    # modelo - Random Forests
+    
+    #  BEST PARAMS
+    # nodesize mtry ntree
+    #        4   17   500
+    
+    m_rf = randomForest(catVM ~ .,  data=modeldata, nodesize = 4, mtry = 17, ntree = 500)
+    
+    predrf = predict(m_rf, testdata)
+    
+    confrf = confusionMatrix(predrf,OutputTest)
+    
+    #Resultados
+    
+    results <- cbind(results,confrf$overall["Accuracy"])
+    
+  }
+  
+  rownames(results) <- c("RF")
+  
+  Mean <- mean(results[1,1:5])
+  Resultado = cbind(results, Mean)
+  colnames(Resultado) <- c("1","2","3","4","5","Mean")
+  print(Resultado)
+  
+  varimportances = as.data.frame(m_rf$importance)
+  x = rownames(varimportances)
+  varimportances = cbind(varimportances,x)
+  varimportances = varimportances[order(varimportances$MeanDecreaseGini),c(1,2)]
+  
+  varimportances$x <- factor(varimportances$x, levels = varimportances$x[order(varimportances$MeanDecreaseGini)])
+  
+  rownames(varimportances) <- c(1:nrow(varimportances))
+  
+  levels(varimportances$x)
+  
+  g = ggplot(varimportances, aes(x=varimportances$x, y=varimportances$MeanDecreaseGini)) +
+    geom_col(fill="blue") +
+    coord_flip() +
+    theme(axis.text.x = element_text(size = 8, hjust = 1)) +
+    theme(axis.text.y = element_text(size = 6, hjust = 1)) +
+    scale_y_continuous(breaks=c(5,10,15,20,25,30,35,40,45,50,55)) +
+    theme(panel.grid.minor =   element_blank(), panel.grid.major =   element_line(colour = "gray",size=0.75)) +
+    xlab("Variáveis") +
+    ylab("Importância")
+  
+  # FIM CV KFOLD 
+  
+  # Tune
+  
+  set.seed(100)
+  
+  # tune Random Forests
+  
+  mtune_rf = tune.randomForest(catVM ~ .,  data=dataset, ntree =c(500,700) , mtry =c(15,16,17,18) , nodesize = c(2,3,4), tunecontrol=tune.control(sampling = "cross", cross =5))
+  
+  #  BEST PARAMS
+  #  nodesize mtry ntree
+  #        4   17   500
+  
+  bestm_rf = mtune_rf$best.model  
+  
+  
+  #################### REGRESSÃO LINEAR APENAS COM OS DADOS DE ATLETAS QUE TIVERAM AUMENTO DE VALOR
+  
+  #Loop CV
+  
+  MAPG_A <- MAPG[(which(MAPG$catVM == 3)),]
+  
+  k=5
+  ktest = kfold(MAPG_A,k)
+  dataset = MAPG_A[,-c(4,80)]
+  Output = MAPG_A$varVM
+  rmse_final = c()
+  
+  for (n in 1:k)
+  {
+    modeldata = dataset[ktest!=n,]
+    testdata = dataset[ktest==n,]
+    OutputTest = Output[ktest==n]
+    
+    #Train
+    
+    # modelo - Regressão linear
+    modelolm <- lm(varVM ~ ., data = modeldata)  
+    
+    #Test
+    
+    testlm = predict(modelolm, testdata)
+    
+    #Resultados
+    
+    results = data.frame(testlm, OutputTest)
+    names(results) = c("ModeloLM", "VariacaoVM")
+    
+    rmse_lm = rmse(OutputTest,testlm)
+    
+    rmse_final = cbind(rmse_final,rmse_lm)
+    
+  }
+  Mean <- mean(rmse_final[1,1:5])
+  rmse_final = cbind(rmse_final, Mean)
+  print(rmse_final)
